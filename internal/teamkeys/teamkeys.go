@@ -56,6 +56,17 @@ func (t *TeamKeys) Recipients() ([]age.Recipient, error) {
 	return recipients, nil
 }
 
+// List returns the names of all team members in the TeamKeys, sorted
+// alphabetically.
+func (t *TeamKeys) List() []string {
+	names := make([]string, 0, len(t.Keys))
+	for name := range t.Keys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Save writes the TeamKeys to a JSON file at the given path.
 func Save(path string, t *TeamKeys) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
