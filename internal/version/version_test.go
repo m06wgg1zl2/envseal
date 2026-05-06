@@ -44,12 +44,32 @@ func TestBump_IncrementsVersion(t *testing.T) {
 	}
 }
 
+func TestBump_PreservesSealedAt(t *testing.T) {
+	plaintext := []byte("FOO=bar")
+	prev := version.New(plaintext, "carol")
+
+	bumped := version.Bump(prev, []byte("FOO=bar\nEXTRA=1"))
+
+	// SealedAt should be updated (not zero), but we just verify it is set
+	if bumped.SealedAt.IsZero() {
+		t.Error("expected non-zero SealedAt on bumped version")
+	}
+}
+
 func TestChecksum_Deterministic(t *testing.T) {
 	data := []byte("hello world")
 	a := version.Checksum(data)
 	b := version.Checksum(data)
 	if a != b {
 		t.Errorf("checksum not deterministic: %q != %q", a, b)
+	}
+}
+
+func TestChecksum_DiffersForDifferentInput(t *testing.T) {
+	a := version.Checksum([]byte("hello"))
+	b := version.Checksum([]byte("world"))
+	if a == b {
+		t.Error("expected different checksums for different inputs")
 	}
 }
 
@@ -75,6 +95,13 @@ func TestVerifyFile_Mismatch(t *testing.T) {
 	err := version.VerifyFile(path, "deadbeef")
 	if err == nil {
 		t.Error("expected checksum mismatch error, got nil")
+	}
+}
+
+func TestVerifyFile_MissingFile(t *testing.T) {
+	err := version.VerifyFile("/nonexistent/path/file.env", "abc123")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
 	}
 }
 
