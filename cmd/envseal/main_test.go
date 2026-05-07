@@ -29,6 +29,28 @@ func TestRunInit(t *testing.T) {
 	}
 }
 
+func TestRunInit_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "identity.txt")
+
+	// Run init twice; the second call should not overwrite the existing key.
+	runInit([]string{"-key", keyFile})
+	identity1, err := keystore.LoadIdentity(keyFile)
+	if err != nil {
+		t.Fatalf("load identity after first init: %v", err)
+	}
+
+	runInit([]string{"-key", keyFile})
+	identity2, err := keystore.LoadIdentity(keyFile)
+	if err != nil {
+		t.Fatalf("load identity after second init: %v", err)
+	}
+
+	if identity1.Recipient().String() != identity2.Recipient().String() {
+		t.Error("second init overwrote existing identity")
+	}
+}
+
 func TestRunSealUnseal_Integration(t *testing.T) {
 	dir := t.TempDir()
 	keyFile := filepath.Join(dir, "identity.txt")
