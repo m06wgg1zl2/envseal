@@ -1,5 +1,5 @@
-// Package seal provides high-level operations for encrypting and decrypting
-// .env files using age encryption, combining envelope metadata and team keys.
+// Package seal provides Seal and Unseal operations for .env files,
+// encrypting them into a versioned envelope using age recipients.
 package seal
 
 import (
@@ -7,97 +7,90 @@ import (
 	"os"
 	"time"
 
-	"github.com/user/envseal/internal/crypto"
-	"github.com/user/envseal/internal/envelope"
-	"github.com/user/envseal/internal/keystore"
-	"github.com/user/envseal/internal/teamkeys"
+	"filippo.io/age"
+
+	"github.com/yourorg/envseal/internal/audit"
+	"github.com/yourorg/envseal/internal/crypto"
+	"github.com/yourorg/envseal/internal/diff"
+	"github.com/yourorg/envseal/internal/envelope"
+	"github.com/yourorg/envseal/internal/version"
 )
 
-// SealOptions configures the Seal operation.
-type SealOptions struct {
-	EnvFile    string
-	OutputFile string
-	TeamFile   string
-	KeyFile    string
-}
-
-// UnsealOptions configures the Unseal operation.
-type UnsealOptions struct {
-	SealedFile string
-	OutputFile string
-	KeyFile    string
-}
-
-// Seal reads a plaintext .env file, encrypts it for all team recipients,
-// and writes the sealed envelope to disk.
-func Seal(opts SealOptions) error {
-	plaintext, err := os.ReadFile(opts.EnvFile)
+// Seal reads the plaintext .env file at envPath, encrypts it for all
+// recipients, and writes a versioned sealed envelope to sealedPath.
+// If a previous sealed file exists its version is bumped; otherwise
+// a new envelope is created at version 1.
+func Seal(envPath, sealedPath string, recipients []age.Recipient, identity age.Identity) error {
+	plaintext, err := os.ReadFile(envPath)
 	if err != nil {
-		return fmt.Errorf("reading env file: %w", err)
-	}
-
-	tm, err := teamkeys.Load(opts.TeamFile)
-	if err != nil {
-		return fmt.Errorf("loading team keys: %w", err)
-	}
-
-	recipients, err := tm.Recipients()
-	if err != nil {
-		return fmt.Errorf("parsing recipients: %w", err)
+		return fmt.Errorf("seal: read env file: %w", err)
 	}
 
 	ciphertext, err := crypto.Encrypt(plaintext, recipients)
 	if err != nil {
-		return fmt.Errorf("encrypting: %w", err)
+		return fmt.Errorf("seal: encrypt: %w", err)
 	}
 
-	env := envelope.New(ciphertext)
-	env.SealedAt = time.Now().UTC()
-	env.Source = opts.EnvFile
+	var env *envelope.Envelope
 
-	outPath := opts.OutputFile
-	if outPath == "" {
-		outPath = opts.EnvFile + ".sealed"
+	existing, loadErr := envelope.Load(sealedPath)
+	if loadErr == nil {
+		// Decrypt existing to diff against new plaintext.
+		oldPlain, decErr := crypto.Decrypt(existing.Ciphertext, []age.Identity{identity})
+		if decErr == nil {
+			changes := diff.Compare(string(oldPlain), string(plaintext))
+			if len(changes) == 0 {
+				return nil // nothing changed — skip re-seal
+			}
+			_ = audit.Log(sealedPath+".audit", audit.Entry{
+				Action:  "seal",
+				Message: diff.Summary(changes),
+			})
+		}
+		v := version.Bump(existing.Version)
+		env = &envelope.Envelope{
+			Version:    v,
+			Ciphertext: ciphertext,
+		}
+	} else {
+		v := version.New(version.Checksum(plaintext), time.Now())
+		env = &envelope.Envelope{
+			Version:    v,
+			Ciphertext: ciphertext,
+		}
+		_ = audit.Log(sealedPath+".audit", audit.Entry{
+			Action:  "seal",
+			Message: "initial seal",
+		})
 	}
 
-	if err := envelope.Save(outPath, env); err != nil {
-		return fmt.Errorf("saving envelope: %w", err)
+	if err := envelope.Save(sealedPath, env); err != nil {
+		return fmt.Errorf("seal: save envelope: %w", err)
 	}
-
 	return nil
 }
 
-// Unseal reads a sealed envelope, decrypts it using the local identity,
-// and writes the plaintext .env file to disk.
-func Unseal(opts UnsealOptions) error {
-	env, err := envelope.Load(opts.SealedFile)
+// Unseal reads the sealed envelope at sealedPath, decrypts it using the
+// provided identity, and writes the plaintext to envPath.
+func Unseal(sealedPath, envPath string, identity age.Identity) error {
+	env, err := envelope.Load(sealedPath)
 	if err != nil {
-		return fmt.Errorf("loading envelope: %w", err)
+		return fmt.Errorf("unseal: load envelope: %w", err)
 	}
 
-	keyPath := opts.KeyFile
-	if keyPath == "" {
-		keyPath = keystore.DefaultKeyPath()
-	}
-
-	identity, err := keystore.LoadIdentity(keyPath)
+	plaintext, err := crypto.Decrypt(env.Ciphertext, []age.Identity{identity})
 	if err != nil {
-		return fmt.Errorf("loading identity: %w", err)
+		return fmt.Errorf("unseal: decrypt: %w", err)
 	}
 
-	plaintext, err := crypto.Decrypt(env.Ciphertext, []interface{}{identity})
-	if err != nil {
-		return fmt.Errorf("decrypting: %w", err)
+	if err := os.WriteFile(envPath, plaintext, 0600); err != nil {
+		return fmt.Errorf("unseal: write env file: %w", err)
 	}
 
-	outPath := opts.OutputFile
-	if outPath == "" {
-		outPath = opts.SealedFile + ".env"
-	}
-
-	if err := os.WriteFile(outPath, plaintext, 0600); err != nil {
-		return fmt.Errorf("writing output file: %w", err)
-	}
+	_ = audit.Log(sealedPath+".audit", audit.Entry{
+		Action:  "unseal",
+		Message: fmt.Sprintf("unsealed version %d", env.Version.Number),
+	})
 
 	return nil
 }
