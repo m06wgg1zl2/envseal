@@ -2,8 +2,10 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -65,10 +67,7 @@ func ReadAll(logPath string) ([]Entry, error) {
 	}
 
 	var entries []Entry
-	decoder := json.NewDecoder(
-		// wrap bytes in a reader line by line
-		newLineReader(data),
-	)
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	for decoder.More() {
 		var e Entry
 		if err := decoder.Decode(&e); err != nil {
@@ -79,21 +78,5 @@ func ReadAll(logPath string) ([]Entry, error) {
 	return entries, nil
 }
 
-// newLineReader returns a simple bytes reader for the JSON decoder.
-func newLineReader(data []byte) *bytesReader {
-	return &bytesReader{data: data}
-}
-
-type bytesReader struct {
-	data []byte
-	pos  int
-}
-
-func (r *bytesReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.data) {
-		return 0, fmt.Errorf("EOF")
-	}
-	n := copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
-}
+// ensure bytesReader-replacement compiles away; keep io.Reader interface satisfied.
+var _ io.Reader = (*bytes.Reader)(nil)
